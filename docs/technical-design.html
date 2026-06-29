@@ -1,0 +1,548 @@
+<title>Multi-Agent SDE — Technical Architecture</title>
+<meta name="description" content="How the multi-agent workflow actually works: LangGraph state machine, shared state, approval gates, parallel execution, and the API layer.">
+
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --bg:      #0D1117;
+    --surface: #161B22;
+    --border:  #21262D;
+    --border2: #30363D;
+    --indigo:  #6366F1;
+    --indigo-l:#818CF8;
+    --cyan:    #22D3EE;
+    --amber:   #F59E0B;
+    --green:   #22C55E;
+    --red:     #EF4444;
+    --pink:    #EC4899;
+    --text:    #E6EDF3;
+    --muted:   #8B949E;
+    --mono:    'SF Mono','Fira Code','Cascadia Code','Courier New',monospace;
+    --sans:    system-ui,-apple-system,'Segoe UI',sans-serif;
+  }
+  html { background: var(--bg); color: var(--text); font-family: var(--sans); font-size: 15px; line-height: 1.65; }
+  body { max-width: 1060px; margin: 0 auto; padding: 48px 24px 96px; }
+
+  h1,h2,h3,h4,.label { font-family: var(--mono); }
+  h1 { font-size: clamp(1.4rem,3.5vw,2rem); font-weight: 700; line-height: 1.2; text-wrap: balance; }
+  h2 { font-size: 0.72rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.14em; color: var(--muted); margin-bottom: 20px; }
+  h3 { font-size: 0.95rem; font-weight: 600; margin-bottom: 6px; }
+  p  { color: var(--muted); font-size: 0.88rem; max-width: 70ch; }
+  .eyebrow { font-family: var(--mono); font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.14em; color: var(--indigo); margin-bottom: 14px; }
+  hr { border: none; border-top: 1px solid var(--border); margin: 56px 0; }
+  .section { margin-bottom: 60px; }
+
+  /* Code blocks */
+  pre {
+    background: #010409;
+    border: 1px solid var(--border2);
+    border-radius: 6px;
+    padding: 20px 22px;
+    overflow-x: auto;
+    font-family: var(--mono);
+    font-size: 0.78rem;
+    line-height: 1.75;
+    color: #e6edf3;
+  }
+  .t-kw   { color: #FF7B72; }  /* keywords: def, class, return */
+  .t-fn   { color: #D2A8FF; }  /* function names */
+  .t-str  { color: #A5D6FF; }  /* strings */
+  .t-cmt  { color: #8B949E; font-style: italic; }
+  .t-cls  { color: #FFA657; }  /* class names */
+  .t-num  { color: #79C0FF; }  /* numbers */
+  .t-op   { color: #FF7B72; }  /* operators */
+  .t-var  { color: var(--text); }
+  .t-dec  { color: var(--cyan); } /* decorator */
+
+  /* Concept cards */
+  .concept-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px,1fr)); gap: 14px; margin-bottom: 32px; }
+  .concept-card {
+    background: var(--surface);
+    border: 1px solid var(--border2);
+    border-radius: 6px;
+    padding: 16px 18px;
+  }
+  .concept-num { font-family: var(--mono); font-size: 0.68rem; color: var(--indigo); margin-bottom: 8px; }
+  .concept-card h3 { font-size: 0.88rem; margin-bottom: 6px; }
+  .concept-card p { font-size: 0.8rem; }
+
+  /* Flow diagram */
+  .flow { display: flex; flex-direction: column; gap: 0; align-items: flex-start; }
+  .flow-row { display: flex; align-items: stretch; gap: 0; width: 100%; }
+  .flow-node {
+    background: var(--surface);
+    border: 1px solid var(--border2);
+    border-radius: 4px;
+    padding: 10px 14px;
+    font-family: var(--mono);
+    font-size: 0.78rem;
+    flex: 1;
+  }
+  .flow-arrow-h { width: 32px; flex-shrink: 0; display: flex; align-items: center; justify-content: center; font-family: var(--mono); font-size: 0.75rem; color: var(--border2); }
+  .flow-arrow-v { height: 24px; width: 1px; background: var(--border2); margin: 0 0 0 20px; position: relative; }
+  .flow-arrow-v::after { content:''; position:absolute; bottom:-1px; left:50%; transform:translateX(-50%); border-left:4px solid transparent; border-right:4px solid transparent; border-top:5px solid var(--border2); }
+  .fn  { color: var(--indigo-l); }
+  .ft  { font-family: var(--mono); font-size: 0.7rem; color: var(--muted); margin-top: 3px; }
+
+  /* State object viz */
+  .state-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  .state-group {
+    background: var(--surface);
+    border: 1px solid var(--border2);
+    border-radius: 6px;
+    padding: 14px 16px;
+  }
+  .state-group h4 { font-family: var(--mono); font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.1em; color: var(--muted); margin-bottom: 10px; }
+  .state-field { display: flex; align-items: baseline; gap: 8px; margin-bottom: 5px; }
+  .field-name { font-family: var(--mono); font-size: 0.78rem; color: var(--cyan); }
+  .field-type { font-family: var(--mono); font-size: 0.7rem; color: var(--amber); }
+  .field-note { font-size: 0.72rem; color: var(--muted); }
+
+  /* Step list */
+  .step-list { display: flex; flex-direction: column; gap: 0; }
+  .step { display: grid; grid-template-columns: 28px 1fr; gap: 12px; padding-bottom: 20px; position: relative; }
+  .step:not(:last-child)::before { content:''; position:absolute; left:13px; top:26px; bottom:0; width:1px; background:var(--border2); }
+  .step-n { width:28px; height:28px; border-radius:50%; background:var(--surface); border:1px solid var(--border2); display:flex; align-items:center; justify-content:center; font-family:var(--mono); font-size:0.65rem; font-weight:700; color:var(--indigo-l); flex-shrink:0; position:relative; z-index:1; }
+  .step-body { padding-top:4px; }
+  .step-title { font-family:var(--mono); font-size:0.83rem; font-weight:600; color:var(--text); margin-bottom:4px; }
+  .step-desc { font-size:0.8rem; color:var(--muted); }
+  .step-code { font-family:var(--mono); font-size:0.72rem; background:var(--border); color:var(--cyan); padding:2px 7px; border-radius:3px; display:inline-block; margin-top:5px; }
+
+  /* Tag */
+  .tag { font-family:var(--mono); font-size:0.65rem; text-transform:uppercase; letter-spacing:0.08em; padding:2px 8px; border-radius:3px; font-weight:600; }
+  .tag-indigo { background:rgba(99,102,241,.15); color:var(--indigo-l); }
+  .tag-amber  { background:rgba(245,158,11,.12); color:var(--amber); }
+  .tag-green  { background:rgba(34,197,94,.12);  color:var(--green); }
+  .tag-cyan   { background:rgba(34,211,238,.12); color:var(--cyan); }
+
+  /* Callout */
+  .callout { border-left:2px solid var(--indigo); padding:12px 16px; background:rgba(99,102,241,.05); border-radius:0 4px 4px 0; margin:20px 0; }
+  .callout.amber { border-left-color:var(--amber); background:rgba(245,158,11,.05); }
+  .callout p { font-size:0.82rem; color:var(--muted); }
+  .callout strong { color:var(--text); font-family:var(--mono); font-size:0.8rem; }
+
+  @media(max-width:640px){
+    .state-grid { grid-template-columns:1fr; }
+    .concept-grid { grid-template-columns:1fr; }
+  }
+</style>
+
+<!-- HEADER -->
+<div style="margin-bottom:56px;">
+  <div class="eyebrow">Technical Architecture · Deep Dive</div>
+  <h1>How the Workflow<br>Actually Works</h1>
+  <p style="margin-top:14px;font-size:0.9rem;">
+    Three core mechanisms power everything: a <strong style="color:var(--text);">shared state object</strong> that flows between agents, a <strong style="color:var(--text);">LangGraph state machine</strong> that decides what runs next, and a <strong style="color:var(--text);">PostgreSQL checkpointer</strong> that makes approval gates possible.
+  </p>
+</div>
+
+<!-- CORE CONCEPTS -->
+<section class="section">
+  <h2>The Three Core Concepts</h2>
+  <div class="concept-grid">
+    <div class="concept-card">
+      <div class="concept-num">01</div>
+      <h3>Shared State Object</h3>
+      <p>A single Python dict that travels through the entire workflow. Every agent reads from it and writes back to it. This is how agents "talk" to each other — not directly, but through shared memory.</p>
+    </div>
+    <div class="concept-card">
+      <div class="concept-num">02</div>
+      <h3>LangGraph State Machine</h3>
+      <p>A directed graph where nodes are agent functions and edges are transitions. LangGraph decides which node runs next, handles branching (parallel agents), and supports interrupts (approval gates).</p>
+    </div>
+    <div class="concept-card">
+      <div class="concept-num">03</div>
+      <h3>PostgreSQL Checkpointer</h3>
+      <p>After every node completes, the full state is saved to PostgreSQL. This is what makes approval gates work — the graph can pause for hours, and resume exactly where it stopped.</p>
+    </div>
+  </div>
+</section>
+
+<hr>
+
+<!-- STATE OBJECT -->
+<section class="section">
+  <h2>The State Object — What Flows Between Agents</h2>
+  <p style="margin-bottom:20px;">Every agent receives the full state and returns an updated version. Nothing is passed directly between agents.</p>
+
+  <div class="state-grid" style="margin-bottom:24px;">
+    <div class="state-group">
+      <h4>Input + Control</h4>
+      <div class="state-field"><span class="field-name">project_id</span><span class="field-type">str</span></div>
+      <div class="state-field"><span class="field-name">user_input</span><span class="field-type">str</span><span class="field-note">— original prompt</span></div>
+      <div class="state-field"><span class="field-name">gate1_approved</span><span class="field-type">bool</span></div>
+      <div class="state-field"><span class="field-name">gate1_feedback</span><span class="field-type">str | None</span></div>
+      <div class="state-field"><span class="field-name">gate2_approved</span><span class="field-type">bool</span></div>
+      <div class="state-field"><span class="field-name">gate2_feedback</span><span class="field-type">str | None</span></div>
+    </div>
+    <div class="state-group">
+      <h4>Agent Outputs</h4>
+      <div class="state-field"><span class="field-name">requirements</span><span class="field-type">str | None</span><span class="field-note">— PM</span></div>
+      <div class="state-field"><span class="field-name">architecture</span><span class="field-type">str | None</span><span class="field-note">— Architect</span></div>
+      <div class="state-field"><span class="field-name">db_schema</span><span class="field-type">str | None</span><span class="field-note">— Architect</span></div>
+      <div class="state-field"><span class="field-name">openapi_spec</span><span class="field-type">str | None</span><span class="field-note">— Backend</span></div>
+      <div class="state-field"><span class="field-name">task_backlog</span><span class="field-type">str | None</span><span class="field-note">— Backend</span></div>
+      <div class="state-field"><span class="field-name">frontend_spec</span><span class="field-type">str | None</span><span class="field-note">— Frontend</span></div>
+      <div class="state-field"><span class="field-name">test_plan</span><span class="field-type">str | None</span><span class="field-note">— QA</span></div>
+      <div class="state-field"><span class="field-name">review_report</span><span class="field-type">str | None</span><span class="field-note">— Reviewer</span></div>
+      <div class="state-field"><span class="field-name">quality_score</span><span class="field-type">int | None</span><span class="field-note">— Reviewer</span></div>
+    </div>
+    <div class="state-group">
+      <h4>Metrics (per agent)</h4>
+      <div class="state-field"><span class="field-name">metrics</span><span class="field-type">dict</span></div>
+      <div style="margin-left:12px;margin-top:4px;">
+        <div class="state-field"><span class="field-name">pm_agent.tokens_in</span><span class="field-type">int</span></div>
+        <div class="state-field"><span class="field-name">pm_agent.tokens_out</span><span class="field-type">int</span></div>
+        <div class="state-field"><span class="field-name">pm_agent.cost_usd</span><span class="field-type">float</span></div>
+        <div class="state-field"><span class="field-name">pm_agent.latency_s</span><span class="field-type">float</span></div>
+        <div class="state-field"><span class="field-name">architect_agent.*</span><span class="field-type">…</span></div>
+        <div class="state-field"><span class="field-name">backend_agent.*</span><span class="field-type">…</span></div>
+      </div>
+    </div>
+    <div class="state-group">
+      <h4>Memory Context</h4>
+      <div class="state-field"><span class="field-name">past_decisions</span><span class="field-type">list[str]</span><span class="field-note">— from ChromaDB</span></div>
+      <div class="state-field"><span class="field-name">user_preferences</span><span class="field-type">dict</span><span class="field-note">— from DB</span></div>
+    </div>
+  </div>
+
+  <div class="callout">
+    <p><strong>Why shared state?</strong> The Architect agent doesn't call the PM agent. It reads <code>state["requirements"]</code>. The Backend agent reads <code>state["architecture"]</code> and <code>state["db_schema"]</code>. This makes every agent independently testable — just pass it a state dict.</p>
+  </div>
+</section>
+
+<hr>
+
+<!-- HOW ONE AGENT WORKS -->
+<section class="section">
+  <h2>How a Single Agent Node Works</h2>
+  <p style="margin-bottom:20px;">Every agent follows the same pattern. Here's the PM Agent in full:</p>
+
+<pre><span class="t-kw">import</span> time
+<span class="t-kw">from</span> anthropic <span class="t-kw">import</span> Anthropic
+
+client <span class="t-op">=</span> Anthropic()
+
+<span class="t-kw">def</span> <span class="t-fn">run_pm_agent</span>(state: WorkflowState) <span class="t-op">-></span> WorkflowState:
+    start <span class="t-op">=</span> time.time()
+
+    <span class="t-cmt"># 1. Build prompt from current state</span>
+    system_prompt <span class="t-op">=</span> <span class="t-str">"""You are a senior product manager.
+    Produce a structured requirements document.
+    Return your output as a markdown document."""</span>
+
+    user_prompt <span class="t-op">=</span> <span class="t-str">f"""Product Idea: {state['user_input']}
+
+    Past project context (from memory):
+    {state.get('past_decisions', 'None')}
+
+    User preferences:
+    {state.get('user_preferences', {})}
+
+    Produce:
+    - Functional requirements (numbered list)
+    - User stories (As a... I want... So that...)
+    - Acceptance criteria per story
+    - Non-functional requirements
+    - Explicitly out of scope items"""</span>
+
+    <span class="t-cmt"># 2. Call the Claude API</span>
+    response <span class="t-op">=</span> client.messages.create(
+        model<span class="t-op">=</span><span class="t-str">"claude-sonnet-4-6"</span>,
+        max_tokens<span class="t-op">=</span><span class="t-num">4096</span>,
+        system<span class="t-op">=</span>system_prompt,
+        messages<span class="t-op">=</span>[{<span class="t-str">"role"</span>: <span class="t-str">"user"</span>, <span class="t-str">"content"</span>: user_prompt}]
+    )
+
+    <span class="t-cmt"># 3. Track metrics</span>
+    latency <span class="t-op">=</span> time.time() <span class="t-op">-</span> start
+    cost <span class="t-op">=</span> <span class="t-fn">calculate_cost</span>(response.usage, <span class="t-str">"claude-sonnet-4-6"</span>)
+
+    <span class="t-cmt"># 4. Write output back to state — return full updated state</span>
+    <span class="t-kw">return</span> {
+        <span class="t-op">**</span>state,
+        <span class="t-str">"requirements"</span>: response.content[<span class="t-num">0</span>].text,
+        <span class="t-str">"metrics"</span>: {
+            <span class="t-op">**</span>state.get(<span class="t-str">"metrics"</span>, {}),
+            <span class="t-str">"pm_agent"</span>: {
+                <span class="t-str">"tokens_in"</span>:  response.usage.input_tokens,
+                <span class="t-str">"tokens_out"</span>: response.usage.output_tokens,
+                <span class="t-str">"cost_usd"</span>:   cost,
+                <span class="t-str">"latency_s"</span>:  latency,
+            }
+        }
+    }</pre>
+
+  <div class="callout" style="margin-top:20px;">
+    <p><strong>The pattern is always:</strong> read from state → build prompt → call Claude → parse response → write output + metrics back to state. Every agent is a pure function that takes state in and returns updated state out.</p>
+  </div>
+</section>
+
+<hr>
+
+<!-- LANGGRAPH GRAPH -->
+<section class="section">
+  <h2>The LangGraph State Machine</h2>
+  <p style="margin-bottom:20px;">LangGraph wraps those agent functions into a directed graph. It decides what runs next, handles branching, and manages pauses.</p>
+
+<pre><span class="t-kw">from</span> langgraph.graph <span class="t-kw">import</span> StateGraph, END
+<span class="t-kw">from</span> langgraph.types <span class="t-kw">import</span> Send
+<span class="t-kw">from</span> langgraph.checkpoint.postgres <span class="t-kw">import</span> PostgresSaver
+
+<span class="t-cmt"># --- Build the graph ---</span>
+builder <span class="t-op">=</span> StateGraph(WorkflowState)
+
+<span class="t-cmt"># Register every node (agent function)</span>
+builder.add_node(<span class="t-str">"pm_agent"</span>,       run_pm_agent)
+builder.add_node(<span class="t-str">"architect_agent"</span>, run_architect_agent)
+builder.add_node(<span class="t-str">"backend_agent"</span>,   run_backend_agent)
+builder.add_node(<span class="t-str">"frontend_agent"</span>,  run_frontend_agent)
+builder.add_node(<span class="t-str">"qa_agent"</span>,        run_qa_agent)
+builder.add_node(<span class="t-str">"join"</span>,            join_parallel_outputs)
+builder.add_node(<span class="t-str">"reviewer_agent"</span>,  run_reviewer_agent)
+
+<span class="t-cmt"># Linear edges</span>
+builder.set_entry_point(<span class="t-str">"pm_agent"</span>)
+builder.add_edge(<span class="t-str">"pm_agent"</span>,       <span class="t-str">"architect_agent"</span>)
+builder.add_edge(<span class="t-str">"architect_agent"</span>, <span class="t-str">"backend_agent"</span>)   <span class="t-cmt"># explained below</span>
+
+<span class="t-cmt"># Fan-out: after architect, dispatch 3 agents in parallel</span>
+<span class="t-kw">def</span> <span class="t-fn">dispatch_parallel</span>(state: WorkflowState):
+    <span class="t-kw">return</span> [
+        Send(<span class="t-str">"backend_agent"</span>,  state),
+        Send(<span class="t-str">"frontend_agent"</span>, state),
+        Send(<span class="t-str">"qa_agent"</span>,       state),
+    ]
+
+builder.add_conditional_edges(<span class="t-str">"architect_agent"</span>, dispatch_parallel)
+
+<span class="t-cmt"># All three parallel agents converge at "join"</span>
+builder.add_edge(<span class="t-str">"backend_agent"</span>,  <span class="t-str">"join"</span>)
+builder.add_edge(<span class="t-str">"frontend_agent"</span>, <span class="t-str">"join"</span>)
+builder.add_edge(<span class="t-str">"qa_agent"</span>,       <span class="t-str">"join"</span>)
+builder.add_edge(<span class="t-str">"join"</span>,            <span class="t-str">"reviewer_agent"</span>)
+builder.add_edge(<span class="t-str">"reviewer_agent"</span>,  END)
+
+<span class="t-cmt"># Attach PostgreSQL checkpointer — saves state after every node</span>
+checkpointer <span class="t-op">=</span> PostgresSaver(conn_string<span class="t-op">=</span>DATABASE_URL)
+
+<span class="t-cmt"># interrupt_before: pause the graph BEFORE these nodes, wait for resume</span>
+workflow <span class="t-op">=</span> builder.compile(
+    checkpointer<span class="t-op">=</span>checkpointer,
+    interrupt_before<span class="t-op">=</span>[<span class="t-str">"architect_agent"</span>, <span class="t-str">"backend_agent"</span>]
+    <span class="t-cmt">#                    ^ Gate 1                ^ Gate 2</span>
+)</pre>
+</section>
+
+<hr>
+
+<!-- APPROVAL GATES -->
+<section class="section">
+  <h2>How Approval Gates Work</h2>
+  <p style="margin-bottom:20px;">This is the most important mechanism to understand. LangGraph's <code>interrupt_before</code> makes the graph pause mid-execution, save everything, and wait indefinitely until resumed via the API.</p>
+
+<pre><span class="t-cmt"># --- Running the workflow (called by Celery worker) ---</span>
+
+<span class="t-kw">def</span> <span class="t-fn">run_workflow</span>(project_id: str, user_input: str):
+    config <span class="t-op">=</span> {<span class="t-str">"configurable"</span>: {<span class="t-str">"thread_id"</span>: project_id}}
+    initial_state <span class="t-op">=</span> {<span class="t-str">"project_id"</span>: project_id, <span class="t-str">"user_input"</span>: user_input}
+
+    <span class="t-cmt"># Graph runs pm_agent, then PAUSES before architect_agent</span>
+    <span class="t-cmt"># State is saved to PostgreSQL. Function returns here.</span>
+    workflow.invoke(initial_state, config)
+
+<span class="t-cmt"># --- FastAPI: user approves Gate 1 ---</span>
+
+<span class="t-dec">@router.post</span>(<span class="t-str">"/projects/{project_id}/approve"</span>)
+<span class="t-kw">async def</span> <span class="t-fn">approve_gate</span>(project_id: str, body: ApprovalBody):
+    config <span class="t-op">=</span> {<span class="t-str">"configurable"</span>: {<span class="t-str">"thread_id"</span>: project_id}}
+
+    <span class="t-cmt"># Inject user feedback into the paused state</span>
+    workflow.update_state(config, {
+        <span class="t-str">"gate1_approved"</span>: <span class="t-kw">True</span>,
+        <span class="t-str">"gate1_feedback"</span>: body.feedback  <span class="t-cmt"># optional edits from user</span>
+    })
+
+    <span class="t-cmt"># Queue resumption in Celery — graph picks up from the interrupt point</span>
+    resume_workflow.delay(project_id)
+    <span class="t-kw">return</span> {<span class="t-str">"status"</span>: <span class="t-str">"resumed"</span>}
+
+<span class="t-cmt"># --- Celery task: resumes from checkpoint ---</span>
+
+<span class="t-dec">@celery.task</span>
+<span class="t-kw">def</span> <span class="t-fn">resume_workflow</span>(project_id: str):
+    config <span class="t-op">=</span> {<span class="t-str">"configurable"</span>: {<span class="t-str">"thread_id"</span>: project_id}}
+    <span class="t-cmt"># None means: resume from saved checkpoint, don't restart</span>
+    workflow.invoke(<span class="t-kw">None</span>, config)
+    <span class="t-cmt"># Graph continues: architect_agent → pause at Gate 2 → ... → END</span></pre>
+
+  <div class="callout amber" style="margin-top:20px;">
+    <p><strong>Key insight:</strong> The graph can sit paused for minutes, hours, or days. The state is in PostgreSQL. When the user approves, the Celery task picks up the exact same state object — with the PM agent's output already in it — and continues from the interrupt point. No data is lost, no agent re-runs.</p>
+  </div>
+</section>
+
+<hr>
+
+<!-- PARALLEL EXECUTION -->
+<section class="section">
+  <h2>How Parallel Execution Works</h2>
+  <p style="margin-bottom:20px;">After Gate 2, three agents run at the same time. LangGraph's <code>Send()</code> dispatches them concurrently. The <code>join</code> node waits until all three have written back to state.</p>
+
+<pre><span class="t-cmt"># dispatch_parallel() returns 3 Send() calls simultaneously</span>
+<span class="t-cmt"># LangGraph runs backend_agent, frontend_agent, qa_agent in parallel threads</span>
+
+<span class="t-kw">def</span> <span class="t-fn">join_parallel_outputs</span>(state: WorkflowState) <span class="t-op">-></span> WorkflowState:
+    <span class="t-cmt"># By the time this runs, all three have written to state:</span>
+    <span class="t-cmt"># state["openapi_spec"]   ← from backend_agent</span>
+    <span class="t-cmt"># state["task_backlog"]   ← from backend_agent</span>
+    <span class="t-cmt"># state["frontend_spec"]  ← from frontend_agent</span>
+    <span class="t-cmt"># state["test_plan"]      ← from qa_agent</span>
+
+    <span class="t-cmt"># This node just validates all three are present before reviewer runs</span>
+    missing <span class="t-op">=</span> [
+        k <span class="t-kw">for</span> k <span class="t-kw">in</span> [<span class="t-str">"openapi_spec"</span>, <span class="t-str">"frontend_spec"</span>, <span class="t-str">"test_plan"</span>]
+        <span class="t-kw">if not</span> state.get(k)
+    ]
+    <span class="t-kw">if</span> missing:
+        <span class="t-kw">raise</span> <span class="t-cls">RuntimeError</span>(<span class="t-str">f"Parallel agents incomplete: {missing}"</span>)
+
+    <span class="t-kw">return</span> state  <span class="t-cmt"># pass through to reviewer_agent</span>
+
+
+<span class="t-cmt"># The Reviewer Agent then reads ALL outputs at once:</span>
+<span class="t-kw">def</span> <span class="t-fn">run_reviewer_agent</span>(state: WorkflowState) <span class="t-op">-></span> WorkflowState:
+    prompt <span class="t-op">=</span> <span class="t-str">f"""You are a senior technical reviewer.
+
+    Requirements: {state['requirements']}
+    Architecture: {state['architecture']}
+    DB Schema:    {state['db_schema']}
+    OpenAPI Spec: {state['openapi_spec']}
+    Frontend Spec:{state['frontend_spec']}
+    Test Plan:    {state['test_plan']}
+
+    Cross-check all of the above. Find:
+    - Inconsistencies between spec layers
+    - Requirements not covered by any spec
+    - Schema fields referenced in API but not defined
+    - Missing test coverage for critical paths
+
+    Return a review report and a quality score (0-100)."""</span>
+
+    <span class="t-cmt"># ... same call/return pattern as every other agent</span></pre>
+</section>
+
+<hr>
+
+<!-- FULL REQUEST FLOW -->
+<section class="section">
+  <h2>Full Request-to-Output Flow</h2>
+  <div class="step-list">
+    <div class="step">
+      <div class="step-n">1</div>
+      <div class="step-body">
+        <div class="step-title">POST /projects</div>
+        <div class="step-desc">User submits "Build a subscription tracking app". FastAPI creates a project row in PostgreSQL, assigns a <code>project_id</code>, and queues a Celery task. Returns <code>project_id</code> immediately — doesn't wait for agents.</div>
+      </div>
+    </div>
+    <div class="step">
+      <div class="step-n">2</div>
+      <div class="step-body">
+        <div class="step-title">Celery runs PM Agent</div>
+        <div class="step-desc">Worker picks up the task. LangGraph starts the graph with <code>thread_id = project_id</code>. PM Agent runs, writes <code>requirements</code> to state. State is saved to PostgreSQL.</div>
+        <div class="step-code">state["requirements"] = "..."</div>
+      </div>
+    </div>
+    <div class="step">
+      <div class="step-n">3</div>
+      <div class="step-body">
+        <div class="step-title">Graph pauses at Gate 1</div>
+        <div class="step-desc">LangGraph hits <code>interrupt_before=["architect_agent"]</code>. Saves full state to PostgreSQL. Celery task completes. Project status in DB: <code>awaiting_gate1</code>.</div>
+      </div>
+    </div>
+    <div class="step">
+      <div class="step-n">4</div>
+      <div class="step-body">
+        <div class="step-title">GET /projects/:id (client polls)</div>
+        <div class="step-desc">Frontend reads project status and the requirements text from DB. User reviews the requirements document in the UI. Can add notes or edits.</div>
+      </div>
+    </div>
+    <div class="step">
+      <div class="step-n">5</div>
+      <div class="step-body">
+        <div class="step-title">POST /projects/:id/approve (Gate 1)</div>
+        <div class="step-desc">FastAPI calls <code>workflow.update_state()</code> to inject <code>gate1_approved=True</code> and any user feedback. Queues a new Celery task to resume.</div>
+      </div>
+    </div>
+    <div class="step">
+      <div class="step-n">6</div>
+      <div class="step-body">
+        <div class="step-title">Celery resumes — Architect Agent runs</div>
+        <div class="step-desc">Graph resumes from the checkpoint. Architect Agent reads <code>state["requirements"]</code> and any gate feedback. Writes architecture, schema, and API surface to state. Graph pauses again at Gate 2.</div>
+      </div>
+    </div>
+    <div class="step">
+      <div class="step-n">7</div>
+      <div class="step-body">
+        <div class="step-title">Gate 2 approval — parallel agents fire</div>
+        <div class="step-desc">After user approves architecture, graph dispatches Backend + Frontend + QA agents in parallel via <code>Send()</code>. All three Celery sub-tasks run concurrently. Each writes its output to state.</div>
+        <div class="step-code">Send("backend_agent", state) · Send("frontend_agent", state) · Send("qa_agent", state)</div>
+      </div>
+    </div>
+    <div class="step">
+      <div class="step-n">8</div>
+      <div class="step-body">
+        <div class="step-title">Join → Reviewer Agent → END</div>
+        <div class="step-desc">Once all three parallel agents complete, the join node validates their outputs. Reviewer Agent reads everything, produces the review report and quality score. Graph reaches END.</div>
+      </div>
+    </div>
+    <div class="step">
+      <div class="step-n">9</div>
+      <div class="step-body">
+        <div class="step-title">Final package assembled</div>
+        <div class="step-desc">FastAPI reads the final state from the LangGraph checkpoint. Writes each field to a file (<code>requirements.md</code>, <code>openapi.yaml</code>, etc.). Writes the metrics to the observability table. Marks project <code>complete</code>. User downloads the bundle.</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<hr>
+
+<!-- PROMPT CONSTRUCTION -->
+<section class="section">
+  <h2>How Each Agent Knows What To Do</h2>
+  <p style="margin-bottom:16px;">Prompts are built dynamically from state. Downstream agents get richer context because more of state is filled in by the time they run.</p>
+
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;">
+    <div style="background:var(--surface);border:1px solid var(--border2);border-radius:6px;padding:16px 18px;">
+      <div style="font-family:var(--mono);font-size:0.7rem;color:var(--indigo);margin-bottom:10px;text-transform:uppercase;letter-spacing:.1em;">PM Agent prompt uses:</div>
+      <div style="font-family:var(--mono);font-size:0.78rem;color:var(--cyan);">state["user_input"]</div>
+      <div style="font-family:var(--mono);font-size:0.78rem;color:var(--cyan);">state["past_decisions"]</div>
+      <div style="font-family:var(--mono);font-size:0.78rem;color:var(--cyan);">state["user_preferences"]</div>
+    </div>
+    <div style="background:var(--surface);border:1px solid var(--border2);border-radius:6px;padding:16px 18px;">
+      <div style="font-family:var(--mono);font-size:0.7rem;color:var(--indigo);margin-bottom:10px;text-transform:uppercase;letter-spacing:.1em;">Architect Agent prompt uses:</div>
+      <div style="font-family:var(--mono);font-size:0.78rem;color:var(--cyan);">state["requirements"]</div>
+      <div style="font-family:var(--mono);font-size:0.78rem;color:var(--cyan);">state["gate1_feedback"]</div>
+    </div>
+    <div style="background:var(--surface);border:1px solid var(--border2);border-radius:6px;padding:16px 18px;">
+      <div style="font-family:var(--mono);font-size:0.7rem;color:var(--indigo);margin-bottom:10px;text-transform:uppercase;letter-spacing:.1em;">Backend Agent prompt uses:</div>
+      <div style="font-family:var(--mono);font-size:0.78rem;color:var(--cyan);">state["requirements"]</div>
+      <div style="font-family:var(--mono);font-size:0.78rem;color:var(--cyan);">state["architecture"]</div>
+      <div style="font-family:var(--mono);font-size:0.78rem;color:var(--cyan);">state["db_schema"]</div>
+      <div style="font-family:var(--mono);font-size:0.78rem;color:var(--cyan);">state["gate2_feedback"]</div>
+    </div>
+    <div style="background:var(--surface);border:1px solid var(--border2);border-radius:6px;padding:16px 18px;">
+      <div style="font-family:var(--mono);font-size:0.7rem;color:var(--indigo);margin-bottom:10px;text-transform:uppercase;letter-spacing:.1em;">Reviewer Agent prompt uses:</div>
+      <div style="font-family:var(--mono);font-size:0.78rem;color:var(--cyan);">state["requirements"]</div>
+      <div style="font-family:var(--mono);font-size:0.78rem;color:var(--cyan);">state["architecture"]</div>
+      <div style="font-family:var(--mono);font-size:0.78rem;color:var(--cyan);">state["db_schema"]</div>
+      <div style="font-family:var(--mono);font-size:0.78rem;color:var(--cyan);">state["openapi_spec"]</div>
+      <div style="font-family:var(--mono);font-size:0.78rem;color:var(--cyan);">state["frontend_spec"]</div>
+      <div style="font-family:var(--mono);font-size:0.78rem;color:var(--cyan);">state["test_plan"]</div>
+    </div>
+  </div>
+
+  <div class="callout" style="margin-top:20px;">
+    <p><strong>This is the real value of shared state:</strong> By the time the Reviewer runs, the state object contains every prior agent's output. The Reviewer's prompt is essentially the entire project specification in one call. No manual plumbing between agents needed.</p>
+  </div>
+</section>

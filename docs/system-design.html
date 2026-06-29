@@ -1,0 +1,851 @@
+<title>Multi-Agent SDE — System Design</title>
+<meta name="description" content="Complete system design for the Multi-Agent Software Development Engine: agents, pipeline, approvals, memory, observability, and tech stack.">
+
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg:       #0D1117;
+    --surface:  #161B22;
+    --border:   #21262D;
+    --border2:  #30363D;
+    --indigo:   #6366F1;
+    --indigo-l: #818CF8;
+    --cyan:     #22D3EE;
+    --amber:    #F59E0B;
+    --green:    #22C55E;
+    --red:      #EF4444;
+    --text:     #E6EDF3;
+    --muted:    #8B949E;
+    --mono:     'SF Mono', 'Fira Code', 'Cascadia Code', 'Courier New', monospace;
+    --sans:     system-ui, -apple-system, 'Segoe UI', sans-serif;
+  }
+
+  html { background: var(--bg); color: var(--text); font-family: var(--sans); font-size: 15px; line-height: 1.6; }
+  body { max-width: 1100px; margin: 0 auto; padding: 48px 24px 96px; }
+
+  /* ─── Typography ─────────────────────────────── */
+  h1, h2, h3, h4, .label { font-family: var(--mono); letter-spacing: -0.02em; }
+  h1 { font-size: clamp(1.6rem, 4vw, 2.4rem); font-weight: 700; color: var(--text); line-height: 1.15; text-wrap: balance; }
+  h2 { font-size: 1rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.12em; color: var(--muted); margin-bottom: 24px; }
+  h3 { font-size: 1.05rem; font-weight: 600; color: var(--text); }
+  h4 { font-size: 0.78rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.1em; color: var(--muted); margin-bottom: 6px; }
+  p { color: var(--muted); max-width: 68ch; }
+  code { font-family: var(--mono); font-size: 0.82em; background: var(--border); padding: 1px 5px; border-radius: 3px; color: var(--cyan); }
+
+  /* ─── Layout ─────────────────────────────────── */
+  .section { margin-bottom: 72px; }
+  .divider { border: none; border-top: 1px solid var(--border); margin: 64px 0; }
+
+  /* ─── Header ─────────────────────────────────── */
+  .header { margin-bottom: 72px; }
+  .eyebrow { font-family: var(--mono); font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.14em; color: var(--indigo); margin-bottom: 16px; }
+  .header-sub { font-size: 1.05rem; color: var(--muted); max-width: 62ch; margin-top: 16px; }
+  .badge { display: inline-block; font-family: var(--mono); font-size: 0.7rem; background: rgba(99,102,241,0.12); border: 1px solid rgba(99,102,241,0.3); color: var(--indigo-l); padding: 3px 10px; border-radius: 3px; margin-top: 20px; }
+
+  /* ─── Pipeline ───────────────────────────────── */
+  .pipeline { display: flex; flex-direction: column; align-items: center; gap: 0; }
+  .pipe-node {
+    width: 100%;
+    max-width: 560px;
+    background: var(--surface);
+    border: 1px solid var(--border2);
+    border-radius: 6px;
+    padding: 18px 22px;
+    position: relative;
+  }
+  .pipe-node.gate {
+    border-color: var(--amber);
+    background: rgba(245,158,11,0.06);
+  }
+  .pipe-node.parallel-group {
+    max-width: 100%;
+    background: transparent;
+    border: 1px dashed var(--border2);
+    padding: 20px;
+  }
+  .pipe-connector {
+    width: 1px;
+    height: 32px;
+    background: var(--border2);
+    position: relative;
+  }
+  .pipe-connector::after {
+    content: '';
+    position: absolute;
+    bottom: -1px;
+    left: 50%;
+    transform: translateX(-50%);
+    border-left: 5px solid transparent;
+    border-right: 5px solid transparent;
+    border-top: 6px solid var(--border2);
+  }
+  .pipe-connector.accent { background: var(--indigo); }
+  .pipe-connector.accent::after { border-top-color: var(--indigo); }
+  .pipe-node-top { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
+  .agent-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+  .dot-indigo { background: var(--indigo); }
+  .dot-amber  { background: var(--amber); }
+  .dot-cyan   { background: var(--cyan); }
+  .dot-green  { background: var(--green); }
+  .pipe-node-label { font-family: var(--mono); font-size: 0.82rem; font-weight: 600; color: var(--text); }
+  .pipe-node-desc { font-size: 0.83rem; color: var(--muted); }
+  .pipe-node-output { font-family: var(--mono); font-size: 0.72rem; color: var(--cyan); margin-top: 8px; }
+  .gate-label { font-family: var(--mono); font-size: 0.7rem; color: var(--amber); text-transform: uppercase; letter-spacing: 0.1em; }
+
+  .parallel-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; }
+  .parallel-label { font-family: var(--mono); font-size: 0.7rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.1em; margin-bottom: 14px; text-align: center; }
+
+  /* ─── Agent Cards ────────────────────────────── */
+  .agent-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 16px; }
+  .agent-card {
+    background: var(--surface);
+    border: 1px solid var(--border2);
+    border-radius: 6px;
+    overflow: hidden;
+  }
+  .agent-card-header {
+    padding: 14px 18px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .agent-role-badge {
+    font-family: var(--mono);
+    font-size: 0.65rem;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    padding: 2px 8px;
+    border-radius: 3px;
+    font-weight: 600;
+  }
+  .badge-pm       { background: rgba(99,102,241,0.15); color: var(--indigo-l); }
+  .badge-arch     { background: rgba(34,211,238,0.12); color: var(--cyan); }
+  .badge-backend  { background: rgba(34,197,94,0.12);  color: var(--green); }
+  .badge-frontend { background: rgba(245,158,11,0.12); color: var(--amber); }
+  .badge-qa       { background: rgba(239,68,68,0.12);  color: var(--red); }
+  .badge-reviewer { background: rgba(139,148,158,0.2); color: var(--muted); }
+  .agent-card-body { padding: 16px 18px; display: flex; flex-direction: column; gap: 14px; }
+  .io-row { display: flex; flex-direction: column; gap: 4px; }
+  .io-list { display: flex; flex-direction: column; gap: 3px; }
+  .io-item { font-size: 0.82rem; color: var(--muted); display: flex; align-items: baseline; gap: 6px; }
+  .io-item::before { content: '→'; font-family: var(--mono); color: var(--border2); font-size: 0.75rem; flex-shrink: 0; }
+  .io-item.out::before { content: '←'; color: var(--indigo); }
+  .model-tag { font-family: var(--mono); font-size: 0.68rem; color: var(--muted); background: var(--border); padding: 2px 7px; border-radius: 3px; align-self: flex-start; }
+
+  /* ─── Features ───────────────────────────────── */
+  .feature-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
+  .feature-card {
+    background: var(--surface);
+    border: 1px solid var(--border2);
+    border-radius: 6px;
+    padding: 20px;
+  }
+  .feature-icon {
+    width: 32px; height: 32px;
+    border-radius: 6px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 0.85rem;
+    font-family: var(--mono);
+    margin-bottom: 14px;
+  }
+  .icon-memory   { background: rgba(99,102,241,0.15); color: var(--indigo-l); }
+  .icon-approval { background: rgba(245,158,11,0.15); color: var(--amber); }
+  .icon-obs      { background: rgba(34,211,238,0.12); color: var(--cyan); }
+  .icon-eval     { background: rgba(34,197,94,0.12);  color: var(--green); }
+  .feature-card h3 { font-size: 0.95rem; margin-bottom: 8px; }
+  .feature-card p { font-size: 0.83rem; color: var(--muted); }
+  .feature-detail { margin-top: 12px; display: flex; flex-direction: column; gap: 4px; }
+  .detail-item { font-size: 0.78rem; font-family: var(--mono); color: var(--muted); display: flex; align-items: center; gap: 6px; }
+  .detail-item::before { content: '·'; color: var(--indigo); font-size: 1rem; }
+
+  /* ─── Output Package ─────────────────────────── */
+  .file-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px; }
+  .file-item {
+    background: var(--surface);
+    border: 1px solid var(--border2);
+    border-radius: 4px;
+    padding: 12px 14px;
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+  }
+  .file-ext { font-family: var(--mono); font-size: 0.68rem; background: var(--border); color: var(--cyan); padding: 2px 6px; border-radius: 3px; flex-shrink: 0; text-transform: uppercase; }
+  .file-name { font-family: var(--mono); font-size: 0.8rem; color: var(--text); }
+  .file-desc { font-size: 0.75rem; color: var(--muted); margin-top: 2px; }
+
+  /* ─── Tech Stack ─────────────────────────────── */
+  .stack-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; }
+  .stack-item {
+    background: var(--surface);
+    border: 1px solid var(--border2);
+    border-radius: 6px;
+    padding: 14px 16px;
+  }
+  .stack-name { font-family: var(--mono); font-size: 0.88rem; font-weight: 600; color: var(--text); margin-bottom: 4px; }
+  .stack-role { font-size: 0.78rem; color: var(--muted); }
+  .stack-why  { font-family: var(--mono); font-size: 0.7rem; color: var(--indigo-l); margin-top: 6px; }
+
+  /* ─── Build Order ────────────────────────────── */
+  .phase-list { display: flex; flex-direction: column; gap: 0; }
+  .phase-item {
+    display: grid;
+    grid-template-columns: 40px 1fr;
+    gap: 16px;
+    padding-bottom: 28px;
+    position: relative;
+  }
+  .phase-item:not(:last-child)::before {
+    content: '';
+    position: absolute;
+    left: 19px;
+    top: 32px;
+    bottom: 0;
+    width: 1px;
+    background: var(--border2);
+  }
+  .phase-num {
+    width: 40px; height: 40px;
+    border-radius: 50%;
+    background: var(--surface);
+    border: 1px solid var(--border2);
+    display: flex; align-items: center; justify-content: center;
+    font-family: var(--mono);
+    font-size: 0.75rem;
+    font-weight: 700;
+    color: var(--indigo-l);
+    flex-shrink: 0;
+    position: relative;
+    z-index: 1;
+  }
+  .phase-content { padding-top: 8px; }
+  .phase-title { font-family: var(--mono); font-size: 0.88rem; font-weight: 600; color: var(--text); margin-bottom: 4px; }
+  .phase-tasks { display: flex; flex-direction: column; gap: 3px; margin-top: 8px; }
+  .phase-task { font-size: 0.8rem; color: var(--muted); display: flex; gap: 8px; align-items: baseline; }
+  .phase-task::before { content: '—'; font-family: var(--mono); color: var(--border2); flex-shrink: 0; }
+
+  /* ─── Metrics preview ────────────────────────── */
+  .metric-row { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 12px; margin-top: 16px; }
+  .metric-card {
+    background: var(--surface);
+    border: 1px solid var(--border2);
+    border-radius: 6px;
+    padding: 14px 16px;
+  }
+  .metric-val { font-family: var(--mono); font-size: 1.4rem; font-weight: 700; color: var(--text); font-variant-numeric: tabular-nums; }
+  .metric-label { font-family: var(--mono); font-size: 0.68rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.08em; margin-top: 4px; }
+  .metric-sub { font-size: 0.72rem; color: var(--muted); margin-top: 4px; }
+
+  /* ─── Responsive ─────────────────────────────── */
+  @media (max-width: 600px) {
+    .parallel-grid { grid-template-columns: 1fr; }
+    .pipe-node { max-width: 100%; }
+  }
+</style>
+
+<!-- ─── HEADER ──────────────────────────────────────── -->
+<header class="header">
+  <div class="eyebrow">System Design Document · v0.1</div>
+  <h1>Multi-Agent<br>Software Development Engine</h1>
+  <p class="header-sub">
+    A system where six specialized AI agents collaborate to transform a plain English product idea into a complete development package — with human approval at every critical decision point.
+  </p>
+  <span class="badge">Status: Pre-development · Design phase</span>
+</header>
+
+<!-- ─── WHAT HAPPENS ───────────────────────────────── -->
+<section class="section">
+  <h2>What It Does</h2>
+  <p>
+    A user types <code>"Build a subscription tracking app"</code>. The system kicks off an orchestrated pipeline of AI agents — each with a focused role — that produce requirements, architecture, database schema, API specifications, implementation tasks, and a test plan. The user approves or corrects the output at two checkpoints before work proceeds. Everything is tracked: token usage, cost, latency, and output quality.
+  </p>
+</section>
+
+<hr class="divider">
+
+<!-- ─── PIPELINE ───────────────────────────────────── -->
+<section class="section">
+  <h2>The Workflow Pipeline</h2>
+  <div class="pipeline">
+
+    <!-- User Input -->
+    <div class="pipe-node">
+      <div class="pipe-node-top">
+        <div class="agent-dot dot-cyan"></div>
+        <span class="pipe-node-label">User Input</span>
+      </div>
+      <div class="pipe-node-desc">"Build a subscription tracking app" — natural language, no structure required.</div>
+    </div>
+
+    <div class="pipe-connector accent"></div>
+
+    <!-- PM Agent -->
+    <div class="pipe-node">
+      <div class="pipe-node-top">
+        <div class="agent-dot dot-indigo"></div>
+        <span class="pipe-node-label">PM Agent — Requirements Gathering</span>
+      </div>
+      <div class="pipe-node-desc">Extracts functional requirements, user stories, acceptance criteria, out-of-scope items, and non-functional requirements from the user's description.</div>
+      <div class="pipe-node-output">→ requirements.md</div>
+    </div>
+
+    <div class="pipe-connector"></div>
+
+    <!-- Gate 1 -->
+    <div class="pipe-node gate">
+      <div class="gate-label">⏸ Human Approval Gate #1</div>
+      <div class="pipe-node-desc" style="margin-top:6px;">User reviews the requirements document. Can edit, add constraints, or reject and restart. Agent does not proceed until approved.</div>
+    </div>
+
+    <div class="pipe-connector accent"></div>
+
+    <!-- Architect Agent -->
+    <div class="pipe-node">
+      <div class="pipe-node-top">
+        <div class="agent-dot dot-indigo"></div>
+        <span class="pipe-node-label">Architect Agent — System Design</span>
+      </div>
+      <div class="pipe-node-desc">Designs system architecture, selects tech stack, produces database schema, and maps the API surface — grounded in approved requirements.</div>
+      <div class="pipe-node-output">→ architecture.md · schema.sql · api-surface.md</div>
+    </div>
+
+    <div class="pipe-connector"></div>
+
+    <!-- Gate 2 -->
+    <div class="pipe-node gate">
+      <div class="gate-label">⏸ Human Approval Gate #2</div>
+      <div class="pipe-node-desc" style="margin-top:6px;">User reviews the architecture. Can swap tech stack choices, adjust schema, or flag design concerns before parallel work begins.</div>
+    </div>
+
+    <div class="pipe-connector accent"></div>
+
+    <!-- Parallel agents -->
+    <div class="pipe-node parallel-group" style="width:100%;">
+      <div class="parallel-label">↓ Parallel Execution — all three run simultaneously</div>
+      <div class="parallel-grid">
+
+        <div class="pipe-node">
+          <div class="pipe-node-top">
+            <div class="agent-dot dot-green"></div>
+            <span class="pipe-node-label">Backend Agent</span>
+          </div>
+          <div class="pipe-node-desc">Full OpenAPI spec, DB migrations, implementation task backlog with estimates.</div>
+          <div class="pipe-node-output">→ openapi.yaml · tasks.md</div>
+        </div>
+
+        <div class="pipe-node">
+          <div class="pipe-node-top">
+            <div class="agent-dot dot-amber"></div>
+            <span class="pipe-node-label">Frontend Agent</span>
+          </div>
+          <div class="pipe-node-desc">Component hierarchy, page list, routing plan, state management approach.</div>
+          <div class="pipe-node-output">→ frontend-spec.md</div>
+        </div>
+
+        <div class="pipe-node">
+          <div class="pipe-node-top">
+            <div class="agent-dot dot-indigo"></div>
+            <span class="pipe-node-label">QA Agent</span>
+          </div>
+          <div class="pipe-node-desc">Test cases, acceptance criteria checklist, edge cases, testing strategy by layer.</div>
+          <div class="pipe-node-output">→ test-plan.md</div>
+        </div>
+
+      </div>
+    </div>
+
+    <div class="pipe-connector accent"></div>
+
+    <!-- Reviewer -->
+    <div class="pipe-node">
+      <div class="pipe-node-top">
+        <div class="agent-dot" style="background:var(--muted)"></div>
+        <span class="pipe-node-label">Reviewer Agent — Cross-Review</span>
+      </div>
+      <div class="pipe-node-desc">Reads all agent outputs. Flags inconsistencies between spec layers, validates completeness against requirements, assigns a quality score.</div>
+      <div class="pipe-node-output">→ review-report.md · quality_score: 0–100</div>
+    </div>
+
+    <div class="pipe-connector"></div>
+
+    <!-- Final -->
+    <div class="pipe-node" style="border-color: var(--indigo); background: rgba(99,102,241,0.05);">
+      <div class="pipe-node-top">
+        <div class="agent-dot dot-indigo"></div>
+        <span class="pipe-node-label">Final Development Package — Delivered</span>
+      </div>
+      <div class="pipe-node-desc">All artifacts bundled. Workflow summary with cost, token usage, and per-agent latency attached.</div>
+      <div class="pipe-node-output">→ workflow-summary.json · all artifacts</div>
+    </div>
+
+  </div>
+</section>
+
+<hr class="divider">
+
+<!-- ─── AGENT PROFILES ─────────────────────────────── -->
+<section class="section">
+  <h2>Agent Profiles</h2>
+  <div class="agent-grid">
+
+    <div class="agent-card">
+      <div class="agent-card-header">
+        <span class="agent-role-badge badge-pm">PM Agent</span>
+        <span style="font-family:var(--mono);font-size:0.78rem;color:var(--text);">Product Manager</span>
+      </div>
+      <div class="agent-card-body">
+        <div class="io-row">
+          <h4>Input</h4>
+          <div class="io-list">
+            <div class="io-item">User's raw product description</div>
+          </div>
+        </div>
+        <div class="io-row">
+          <h4>Output</h4>
+          <div class="io-list">
+            <div class="io-item out">Functional requirements list</div>
+            <div class="io-item out">User stories (with personas)</div>
+            <div class="io-item out">Acceptance criteria per story</div>
+            <div class="io-item out">Non-functional requirements</div>
+            <div class="io-item out">Explicitly out-of-scope items</div>
+          </div>
+        </div>
+        <span class="model-tag">claude-sonnet-4-6</span>
+      </div>
+    </div>
+
+    <div class="agent-card">
+      <div class="agent-card-header">
+        <span class="agent-role-badge badge-arch">Architect</span>
+        <span style="font-family:var(--mono);font-size:0.78rem;color:var(--text);">System Architect</span>
+      </div>
+      <div class="agent-card-body">
+        <div class="io-row">
+          <h4>Input</h4>
+          <div class="io-list">
+            <div class="io-item">Approved requirements document</div>
+          </div>
+        </div>
+        <div class="io-row">
+          <h4>Output</h4>
+          <div class="io-list">
+            <div class="io-item out">System architecture (layered diagram)</div>
+            <div class="io-item out">Database schema (ER + table definitions)</div>
+            <div class="io-item out">Tech stack with justifications</div>
+            <div class="io-item out">API surface map (resource list)</div>
+            <div class="io-item out">Deployment topology</div>
+          </div>
+        </div>
+        <span class="model-tag">claude-sonnet-4-6</span>
+      </div>
+    </div>
+
+    <div class="agent-card">
+      <div class="agent-card-header">
+        <span class="agent-role-badge badge-backend">Backend</span>
+        <span style="font-family:var(--mono);font-size:0.78rem;color:var(--text);">Backend Engineer</span>
+      </div>
+      <div class="agent-card-body">
+        <div class="io-row">
+          <h4>Input</h4>
+          <div class="io-list">
+            <div class="io-item">Approved architecture + schema</div>
+          </div>
+        </div>
+        <div class="io-row">
+          <h4>Output</h4>
+          <div class="io-list">
+            <div class="io-item out">Full OpenAPI 3.1 specification</div>
+            <div class="io-item out">Database migration files (SQL)</div>
+            <div class="io-item out">Implementation task backlog</div>
+            <div class="io-item out">Effort estimates per task (S/M/L)</div>
+            <div class="io-item out">Auth & middleware notes</div>
+          </div>
+        </div>
+        <span class="model-tag">claude-haiku-4-5</span>
+      </div>
+    </div>
+
+    <div class="agent-card">
+      <div class="agent-card-header">
+        <span class="agent-role-badge badge-frontend">Frontend</span>
+        <span style="font-family:var(--mono);font-size:0.78rem;color:var(--text);">Frontend Engineer</span>
+      </div>
+      <div class="agent-card-body">
+        <div class="io-row">
+          <h4>Input</h4>
+          <div class="io-list">
+            <div class="io-item">Requirements + OpenAPI spec</div>
+          </div>
+        </div>
+        <div class="io-row">
+          <h4>Output</h4>
+          <div class="io-list">
+            <div class="io-item out">Component hierarchy tree</div>
+            <div class="io-item out">Page list + routing plan</div>
+            <div class="io-item out">State management strategy</div>
+            <div class="io-item out">API integration points per page</div>
+            <div class="io-item out">Wireframe descriptions (text)</div>
+          </div>
+        </div>
+        <span class="model-tag">claude-haiku-4-5</span>
+      </div>
+    </div>
+
+    <div class="agent-card">
+      <div class="agent-card-header">
+        <span class="agent-role-badge badge-qa">QA</span>
+        <span style="font-family:var(--mono);font-size:0.78rem;color:var(--text);">QA Engineer</span>
+      </div>
+      <div class="agent-card-body">
+        <div class="io-row">
+          <h4>Input</h4>
+          <div class="io-list">
+            <div class="io-item">Requirements + all impl specs</div>
+          </div>
+        </div>
+        <div class="io-row">
+          <h4>Output</h4>
+          <div class="io-list">
+            <div class="io-item out">Test cases (unit / integration / e2e)</div>
+            <div class="io-item out">Acceptance criteria checklist</div>
+            <div class="io-item out">Edge cases and failure scenarios</div>
+            <div class="io-item out">Testing strategy by layer</div>
+          </div>
+        </div>
+        <span class="model-tag">claude-haiku-4-5</span>
+      </div>
+    </div>
+
+    <div class="agent-card">
+      <div class="agent-card-header">
+        <span class="agent-role-badge badge-reviewer">Reviewer</span>
+        <span style="font-family:var(--mono);font-size:0.78rem;color:var(--text);">Reviewer Agent</span>
+      </div>
+      <div class="agent-card-body">
+        <div class="io-row">
+          <h4>Input</h4>
+          <div class="io-list">
+            <div class="io-item">All agent outputs combined</div>
+          </div>
+        </div>
+        <div class="io-row">
+          <h4>Output</h4>
+          <div class="io-list">
+            <div class="io-item out">Cross-layer consistency check</div>
+            <div class="io-item out">Requirements coverage report</div>
+            <div class="io-item out">Flagged inconsistencies (list)</div>
+            <div class="io-item out">Quality score (0–100)</div>
+            <div class="io-item out">Improvement suggestions</div>
+          </div>
+        </div>
+        <span class="model-tag">claude-sonnet-4-6</span>
+      </div>
+    </div>
+
+  </div>
+</section>
+
+<hr class="divider">
+
+<!-- ─── KEY FEATURES ───────────────────────────────── -->
+<section class="section">
+  <h2>Key Features</h2>
+  <div class="feature-grid">
+
+    <div class="feature-card">
+      <div class="feature-icon icon-memory" style="font-size:0.75rem;">MEM</div>
+      <h3>Memory Layer</h3>
+      <p>Agents remember past projects and decisions. New projects benefit from accumulated context — preferred patterns, past mistakes, user preferences.</p>
+      <div class="feature-detail">
+        <div class="detail-item">PostgreSQL — structured project history</div>
+        <div class="detail-item">ChromaDB — vector embeddings of decisions</div>
+        <div class="detail-item">Injected into each agent's system prompt</div>
+        <div class="detail-item">User can tag decisions to persist</div>
+      </div>
+    </div>
+
+    <div class="feature-card">
+      <div class="feature-icon icon-approval" style="font-size:0.75rem;">HIL</div>
+      <h3>Human-in-the-Loop</h3>
+      <p>Two mandatory approval gates. The system pauses and waits. Users can edit, annotate, and explicitly approve before the pipeline resumes.</p>
+      <div class="feature-detail">
+        <div class="detail-item">Gate #1 — after requirements</div>
+        <div class="detail-item">Gate #2 — after architecture</div>
+        <div class="detail-item">Approval state stored in DB</div>
+        <div class="detail-item">Rejection triggers targeted re-run</div>
+      </div>
+    </div>
+
+    <div class="feature-card">
+      <div class="feature-icon icon-obs" style="font-size:0.75rem;">OBS</div>
+      <h3>Observability</h3>
+      <p>Every agent run is instrumented. Track where time and money go across each workflow, and compare across projects over time.</p>
+      <div class="feature-detail">
+        <div class="detail-item">Per-agent: tokens in/out, cost, latency</div>
+        <div class="detail-item">Per-workflow: total cost, wall-clock time</div>
+        <div class="detail-item">Success / failure rate per agent</div>
+        <div class="detail-item">Dashboard view (Streamlit or simple HTML)</div>
+      </div>
+    </div>
+
+    <div class="feature-card">
+      <div class="feature-icon icon-eval" style="font-size:0.75rem;">EVAL</div>
+      <h3>Evaluation System</h3>
+      <p>A fixed benchmark suite of 3 reference tasks lets you measure quality and cost objectively — across code changes, model swaps, or prompt updates.</p>
+      <div class="feature-detail">
+        <div class="detail-item">Benchmark: CRM · Expense Tracker · Blog</div>
+        <div class="detail-item">Scores: completeness, arch quality, cost</div>
+        <div class="detail-item">Stored in DB, comparable over time</div>
+        <div class="detail-item">Run with one command: <code>python eval.py</code></div>
+      </div>
+    </div>
+
+  </div>
+</section>
+
+<hr class="divider">
+
+<!-- ─── OBSERVABILITY PREVIEW ──────────────────────── -->
+<section class="section">
+  <h2>What Observability Tracks</h2>
+  <p>Each workflow run produces a <code>workflow-summary.json</code> and writes to the metrics DB. Example numbers from a typical run:</p>
+  <div class="metric-row">
+    <div class="metric-card">
+      <div class="metric-val">$0.18</div>
+      <div class="metric-label">Total Cost</div>
+      <div class="metric-sub">Across all 6 agents</div>
+    </div>
+    <div class="metric-card">
+      <div class="metric-val">47s</div>
+      <div class="metric-label">Wall-clock Time</div>
+      <div class="metric-sub">PM→Reviewer</div>
+    </div>
+    <div class="metric-card">
+      <div class="metric-val">28,400</div>
+      <div class="metric-label">Total Tokens</div>
+      <div class="metric-sub">Input + output</div>
+    </div>
+    <div class="metric-card">
+      <div class="metric-val">84/100</div>
+      <div class="metric-label">Quality Score</div>
+      <div class="metric-sub">Reviewer rating</div>
+    </div>
+  </div>
+</section>
+
+<hr class="divider">
+
+<!-- ─── FINAL OUTPUT PACKAGE ──────────────────────── -->
+<section class="section">
+  <h2>What the User Gets</h2>
+  <p>Every completed workflow produces this artifact bundle, ready to hand to a development team or use as a starting point for implementation.</p>
+  <div class="file-list" style="margin-top:20px;">
+    <div class="file-item">
+      <span class="file-ext">md</span>
+      <div>
+        <div class="file-name">requirements.md</div>
+        <div class="file-desc">User stories, acceptance criteria, constraints</div>
+      </div>
+    </div>
+    <div class="file-item">
+      <span class="file-ext">md</span>
+      <div>
+        <div class="file-name">architecture.md</div>
+        <div class="file-desc">System design, tech stack, deployment topology</div>
+      </div>
+    </div>
+    <div class="file-item">
+      <span class="file-ext">sql</span>
+      <div>
+        <div class="file-name">schema.sql</div>
+        <div class="file-desc">Full database schema + migration files</div>
+      </div>
+    </div>
+    <div class="file-item">
+      <span class="file-ext">yaml</span>
+      <div>
+        <div class="file-name">openapi.yaml</div>
+        <div class="file-desc">Complete OpenAPI 3.1 specification</div>
+      </div>
+    </div>
+    <div class="file-item">
+      <span class="file-ext">md</span>
+      <div>
+        <div class="file-name">tasks.md</div>
+        <div class="file-desc">Implementation backlog with size estimates</div>
+      </div>
+    </div>
+    <div class="file-item">
+      <span class="file-ext">md</span>
+      <div>
+        <div class="file-name">frontend-spec.md</div>
+        <div class="file-desc">Components, pages, routing, state plan</div>
+      </div>
+    </div>
+    <div class="file-item">
+      <span class="file-ext">md</span>
+      <div>
+        <div class="file-name">test-plan.md</div>
+        <div class="file-desc">Test cases, edge cases, acceptance checklist</div>
+      </div>
+    </div>
+    <div class="file-item">
+      <span class="file-ext">md</span>
+      <div>
+        <div class="file-name">review-report.md</div>
+        <div class="file-desc">Inconsistencies, quality score, suggestions</div>
+      </div>
+    </div>
+    <div class="file-item">
+      <span class="file-ext">json</span>
+      <div>
+        <div class="file-name">workflow-summary.json</div>
+        <div class="file-desc">Cost, tokens, latency per agent</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<hr class="divider">
+
+<!-- ─── TECH STACK ─────────────────────────────────── -->
+<section class="section">
+  <h2>Tech Stack</h2>
+  <div class="stack-grid">
+    <div class="stack-item">
+      <div class="stack-name">FastAPI</div>
+      <div class="stack-role">Backend API + WebSocket updates</div>
+      <div class="stack-why">Real-time agent progress to frontend</div>
+    </div>
+    <div class="stack-item">
+      <div class="stack-name">LangGraph</div>
+      <div class="stack-role">Agent orchestration + state machine</div>
+      <div class="stack-why">Conditional edges = approval gates</div>
+    </div>
+    <div class="stack-item">
+      <div class="stack-name">Claude API</div>
+      <div class="stack-role">Agent intelligence</div>
+      <div class="stack-why">Sonnet 4.6 for PM/Arch/Reviewer, Haiku 4.5 for the rest</div>
+    </div>
+    <div class="stack-item">
+      <div class="stack-name">PostgreSQL</div>
+      <div class="stack-role">Project state, outputs, approvals, metrics</div>
+      <div class="stack-why">Single source of truth; no separate vector DB to start</div>
+    </div>
+    <div class="stack-item">
+      <div class="stack-name">Redis</div>
+      <div class="stack-role">Job queue + session state</div>
+      <div class="stack-why">Celery broker for background agent jobs</div>
+    </div>
+    <div class="stack-item">
+      <div class="stack-name">Celery</div>
+      <div class="stack-role">Background task execution</div>
+      <div class="stack-why">Agents run async, not blocking HTTP</div>
+    </div>
+    <div class="stack-item">
+      <div class="stack-name">ChromaDB</div>
+      <div class="stack-role">Vector memory (phase 2)</div>
+      <div class="stack-why">Add after core works; upgrade to Qdrant on deploy</div>
+    </div>
+    <div class="stack-item">
+      <div class="stack-name">Docker Compose</div>
+      <div class="stack-role">Local dev environment</div>
+      <div class="stack-why">One command spins up Postgres + Redis + API</div>
+    </div>
+    <div class="stack-item">
+      <div class="stack-name">Railway / Render</div>
+      <div class="stack-role">Deployment</div>
+      <div class="stack-why">Free tier works for demo; no infra management</div>
+    </div>
+  </div>
+</section>
+
+<hr class="divider">
+
+<!-- ─── BUILD ORDER ────────────────────────────────── -->
+<section class="section">
+  <h2>Build Order</h2>
+  <div class="phase-list">
+
+    <div class="phase-item">
+      <div class="phase-num">01</div>
+      <div class="phase-content">
+        <div class="phase-title">Core Pipeline — 4 agents, no memory, no UI</div>
+        <div class="phase-tasks">
+          <div class="phase-task">PM, Architect, Backend, QA agents with basic prompts</div>
+          <div class="phase-task">LangGraph state machine wiring them together</div>
+          <div class="phase-task">Hardcoded approval gates (CLI input for now)</div>
+          <div class="phase-task">Outputs written to local markdown files</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="phase-item">
+      <div class="phase-num">02</div>
+      <div class="phase-content">
+        <div class="phase-title">Persistence — PostgreSQL + API layer</div>
+        <div class="phase-tasks">
+          <div class="phase-task">DB schema for projects, workflows, agent outputs, approvals</div>
+          <div class="phase-task">FastAPI endpoints: create project, get status, approve gate</div>
+          <div class="phase-task">Celery workers for background agent execution</div>
+          <div class="phase-task">Token + cost tracking per agent run</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="phase-item">
+      <div class="phase-num">03</div>
+      <div class="phase-content">
+        <div class="phase-title">Parallel Agents + Reviewer</div>
+        <div class="phase-tasks">
+          <div class="phase-task">Add Frontend Agent alongside Backend + QA</div>
+          <div class="phase-task">Wire parallel execution in LangGraph</div>
+          <div class="phase-task">Reviewer Agent reading all three outputs</div>
+          <div class="phase-task">Final package bundling logic</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="phase-item">
+      <div class="phase-num">04</div>
+      <div class="phase-content">
+        <div class="phase-title">Observability Dashboard</div>
+        <div class="phase-tasks">
+          <div class="phase-task">Metrics stored in DB per workflow</div>
+          <div class="phase-task">Simple dashboard: Streamlit or plain HTML page</div>
+          <div class="phase-task">Per-agent cost/latency breakdown</div>
+          <div class="phase-task">Workflow history with quality scores</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="phase-item">
+      <div class="phase-num">05</div>
+      <div class="phase-content">
+        <div class="phase-title">Evaluation Suite</div>
+        <div class="phase-tasks">
+          <div class="phase-task">3 benchmark tasks: CRM, Expense Tracker, Blog</div>
+          <div class="phase-task"><code>python eval.py</code> runs all three and scores them</div>
+          <div class="phase-task">Scoring: completeness, arch quality, cost, runtime</div>
+          <div class="phase-task">Results stored and comparable over time</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="phase-item">
+      <div class="phase-num">06</div>
+      <div class="phase-content">
+        <div class="phase-title">Memory Layer + Deployment</div>
+        <div class="phase-tasks">
+          <div class="phase-task">ChromaDB for past project embeddings</div>
+          <div class="phase-task">Memory injected into agent system prompts</div>
+          <div class="phase-task">Docker Compose for local, Railway for demo deploy</div>
+          <div class="phase-task">Architecture diagram + demo video for portfolio</div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</section>
