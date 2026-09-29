@@ -4,6 +4,7 @@ from multi_agent_sde.agents.pm_agent import run_pm_agent
 from multi_agent_sde.agents.architect_agent import run_architect_agent
 from multi_agent_sde.agents.backend_agent import run_backend_agent
 from multi_agent_sde.agents.qa_agent import run_qa_agent
+from langgraph.checkpoint.memory import MemorySaver
 
 builder = StateGraph(WorkflowState)
 
@@ -19,7 +20,9 @@ builder.add_edge("backend_agent", "qa_agent")
 builder.add_edge("qa_agent", END)
 
 state = {"project_id":"test-1", "user_input":"Build a subscription tracking app."}
-workflow = builder.compile()
-
-result = workflow.invoke(state)
+memory = MemorySaver()
+workflow = builder.compile(checkpointer=memory, interrupt_before=["architect_agent"])
+config = {"configurable": {"thread_id": "project-test-1"}}
+result = workflow.invoke(state, config)
 print(result)
+
